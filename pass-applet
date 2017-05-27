@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+
+import sys
+import os
+import re
+
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+
+from wfm.process import shell, call, Thread
+
+PASSWORD_STORE = os.environ.get("PASSWORD_STORE_DIR", os.path.expanduser("~/.password-store"))
+
+
+class MainWindow(Gtk.Window):
+
+    def __init__(self):
+        Gtk.Window.__init__(self, title="pass")
+        self.set_border_width(10)
+        self.set_default_size(320, 480)
+        self.set_position(Gtk.WindowPosition.CENTER_ALWAYS)
+
+        self.connect("key-press-event", self.on_window_key_press)
+
+        self.vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.add(self.vbox)
+
+        self.store = Gtk.ListStore(str, bool)
+        self._update_store()
+
+        self.filter = self.store.filter_new()
+        self.filter.set_visible_column(1)
+
+        self.treeview = Gtk.TreeView.new_with_model(self.filter)
+        self.treeview.append_column(Gtk.TreeViewColumn("Name", Gtk.CellRendererText(), text=0))
+        self.treeview.expand_all()
+        self.treeview.connect("row-activated", self.on_activate)
+        self.treeview.set_headers_visible(False)
+        self.treeview.set_activate_on_single_click(True)
+
+        self.model = self.treeview.get_model()
+
+        self.entry = Gtk.SearchEntry()
+        self.entry.connect("activate", self.on_activate)
+        self.entry.connect("changed", self.on_entry_changed)
+        self.vbox.add(self.entry)
+
+        self.scrollable_treelist = Gtk.ScrolledWindow()
+        self.scrollable_treelist.set_vexpand(True)
+        self.scrollable_treelist.add(self.treeview)
+        self.vbox.add(self.scrollable_treelist)
+
+        self.show_all()
+
+    def _update_store(self):
+        self.store.clear()
+        self._walk_store(PASSWORD_STORE)
+        self.rows = [r[0] for r in self.store]
+
+    def _walk_store(self, directory, parent=None):
+        names = sorted(n for n in os.listdir(directory) if not n.startswith("."))
+
+        for name in names:
+            path = os.path.join(directory, name)
+            n = os.path.splitext(name)[0]
+
+            if os.path.isdir(path):
+                self._walk_store(path, n)
+            else:
+                if parent is not None:
+                    n = parent + os.sep + n
+                self.store.append([n, True])
+
+    def on_window_key_press(self, widget, event):
+        if event.string == "\x1b":
+            # Esc
+            Gtk.main_quit()
+
+    def on_activate(self, *_):
+        curs = self.treeview.get_cursor()
+        if curs.path is None:
+            return
+        iter = self.model.get_iter(curs.path)
+        name = self.model.get_value(iter, 0)
+
+        call("pass show -c {}", name)
+
+        Gtk.main_quit()
+
+    def on_entry_changed(self, widget):
+        pattern = widget.get_text()
+        pattern = pattern.lower()
+        pattern = ".*?".join(pattern.split())
+
+        for i, row in enumerate(self.store):
+            name = row[0].lower()
+            self.store[i][1] = not pattern or re.search(pattern, name)
+
+        iter = self.model.get_iter_first()
+        while iter is not None:
+            if self.model.get(iter, 1)[0]:
+                self.treeview.set_cursor(self.model.get_path(iter), None, False)
+                break
+            iter = self.model.iter_next(iter)
+
+
+win = MainWindow()
+win.connect("delete-event", Gtk.main_quit)
+win.show_all()
+Gtk.main()
